@@ -1,0 +1,768 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Interactive Lab Tutorial: Building Footprint Extraction</title>
+    <style>
+        body { font-family: Arial, sans-serif; margin: 20px; line-height: 1.6; color: #333; background-color: #f4f4f4; }
+        .container { max-width: 900px; margin: auto; background-color: #fff; padding: 20px; box-shadow: 0 0 10px rgba(0,0,0,0.1); border-radius: 8px; }
+        .lab-step { border: 1px solid #ddd; padding: 20px; margin-bottom: 25px; border-radius: 8px; background-color: #f9f9f9; }
+        h1 { text-align: center; color: #2c3e50; margin-bottom: 30px; }
+        h2 { color: #2980b9; border-bottom: 2px solid #3498db; padding-bottom: 8px; margin-top: 0; }
+        h3 { color: #34495e; }
+        pre { background-color: #2d3436; color: #dfe6e9; padding: 15px; border-radius: 5px; overflow-x: auto; font-size: 0.9em; }
+        code { font-family: 'Courier New', Courier, monospace; }
+        .run-button { background-color: #27ae60; color: white; padding: 10px 18px; border: none; border-radius: 5px; cursor: pointer; margin-top: 12px; font-size: 0.95em; transition: background-color 0.3s ease; }
+        .run-button:hover { background-color: #229954; }
+        .output { margin-top: 15px; padding: 12px; border: 1px dashed #bdc3c7; background-color: #ecf0f1; border-radius: 5px; display: none; white-space: pre-wrap; font-size: 0.9em; color: #34495e; }
+        .notes { background-color: #eaf2f8; border-left: 5px solid #3498db; margin-top: 20px; margin-bottom: 20px; padding: 15px; font-size: 0.95em; }
+        .plot-description { margin-top: 15px; padding: 12px; border: 1px solid #ddd; background-color: #f5f5f5; border-radius: 5px; font-style: italic; }
+        p { margin-bottom: 12px; }
+        code.inline { background-color: #ecf0f1; padding: 2px 4px; border-radius: 3px; font-size: 0.9em;}
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>Interactive Lab Tutorial: Building Footprint Extraction with U-Net</h1>
+
+        <!-- Step 3.2.1 -->
+        <div class="lab-step" id="step-3-2-1">
+            <h2>3.2.1 Install required libraries</h2>
+            <p>Before starting the building footprint extraction workflow using U-Net, we need to install a few essential Python libraries that are not included by default in Google Colab. These installations are done using the <code class="inline">pip</code> package manager, and the <code class="inline">--quiet</code> flag suppresses verbose output to keep the notebook clean. The <code class="inline">torchgeo</code> library, which is built on top of PyTorch, simplifies working with geospatial data. It provides datasets, transformations, and data loaders tailored for Earth observation tasks. It is particularly helpful for integrating raster and vector data efficiently in deep learning pipelines.</p>
+            <p>The <code class="inline">buildingregulariser</code> library is used to post-process the predicted building footprints. It helps improve the geometric quality of the extracted polygons by cleaning up irregular shapes and enforcing regular building-like structures (e.g., straight edges, right angles). Finally, the <code class="inline">torchsummary</code> utility displays a layer-by-layer summary of a PyTorch model architecture, including input/output dimensions and the number of trainable parameters. It is useful for understanding the structure of complex models like U-Net. Running this cell sets up your Colab environment to support the full modeling pipeline, from data ingestion and training to post-processing and evaluation.</p>
+            <pre><code># Install required packages
+!pip install torchgeo --quiet
+!pip install buildingregulariser --quiet
+!pip install torchsummary --quiet</code></pre>
+            <button class="run-button" onclick="showOutput('output-3-2-1')">Run Code</button>
+            <div class="output" id="output-3-2-1">
+Simulated Output:
+<span style="color: green;">Successfully installed torchgeo-x.y.z buildingregulariser-a.b.c torchsummary-p.q.r</span>
+(Quiet mode suppresses detailed installation logs)
+Environment ready for the next steps.
+            </div>
+        </div>
+
+        <!-- Step 3.2.2 -->
+        <div class="lab-step" id="step-3-2-2">
+            <h2>3.2.2 Importing required libraries</h2>
+            <p>In this step, we import all the necessary libraries to build, train, evaluate, and visualize our U-Net-based semantic segmentation model for extracting building footprints from aerial orthoimagery. We start by importing core Python and scientific libraries such as <code class="inline">os</code>, <code class="inline">numpy</code>, and <code class="inline">pandas</code> to handle file paths, numerical operations, and tabular data, respectively. Visualization libraries <code class="inline">matplotlib.pyplot</code> and <code class="inline">seaborn</code> plot training curves and heat maps representing spatial performance metrics.</p>
+            <p>Next, we bring in geospatial libraries. The <code class="inline">geopandas</code> library is used to read and manipulate vector data formats like GeoJSON, while <code class="inline">rasterio</code> handles raster data such as aerial or satellite images. The <code class="inline">features</code> module within <code class="inline">rasterio</code> is particularly useful for rasterizing vector data or extracting polygons from segmentation masks. The <code class="inline">shapely.geometry</code> utility provides geometry manipulation capabilities, allowing us to work with individual building shapes.</p>
+            <p>For the deep learning workflow, we import <code class="inline">torch</code>, <code class="inline">torch.nn</code>, and <code class="inline">torch.optim</code> to define and optimize the U-Net architecture. We use <code class="inline">DataLoader</code> and <code class="inline">random_split</code> from <code class="inline">torch.utils.data</code> to efficiently manage training and validation datasets. The <code class="inline">torchsummary</code> module is included to print a detailed summary of the model structure, which helps understand the layer configuration and parameter count.</p>
+            <p>To evaluate the model's segmentation performance, we import <code class="inline">f1_score</code> and <code class="inline">jaccard_score</code> from <code class="inline">sklearn.metrics</code> to calculate F1 and Intersection over Union (IoU) scores. We also include <code class="inline">scipy.ndimage</code> for computing boundary-based metrics like boundary IoU. Finally, the <code class="inline">regularize_geodataframe</code> function from the <code class="inline">buildingregulariser</code> library is imported to clean and regularize the predicted building footprints, ensuring they conform to more realistic building shapes. Collectively, these libraries provide a complete toolkit for geospatial deep learning in this tutorial.</p>
+            <pre><code># Import libraries
+import os
+import numpy as np
+import torch
+import torch.nn as nn
+import torch.optim as optim
+import matplotlib.pyplot as plt
+import rasterio
+from rasterio import features
+from torch.utils.data import DataLoader, random_split
+import geopandas as gpd
+import shapely.geometry as shp_geom
+from buildingregulariser import regularize_geodataframe
+from torchsummary import summary
+from sklearn.metrics import f1_score, jaccard_score
+import scipy.ndimage as nd # Added for boundary_iou function later</code></pre>
+            <button class="run-button" onclick="showOutput('output-3-2-2')">Run Code</button>
+            <div class="output" id="output-3-2-2">
+Simulated Output:
+<span style="color: green;">All libraries imported successfully.</span>
+Environment is set up with all necessary tools for the tutorial.
+            </div>
+        </div>
+
+        <!-- Step 3.2.3 -->
+        <div class="lab-step" id="step-3-2-3">
+            <h2>3.2.3 Mount Google Drive and set the working directory</h2>
+            <p>Next, we mount Google Drive to access datasets and save outputs directly within the Colab environment. We begin by importing <code class="inline">drive</code> from <code class="inline">google.colab</code> module, which allows seamless integration between Google Drive and Colab. When <code class="inline">drive.mount('/content/drive/')</code> is executed, it prompts the user to authorize access to their Google Drive. Once mounted, all files and folders in the Drive become accessible through the <code class="inline">/content/drive/</code> path. After mounting, we use <code class="inline">os.chdir('/content/drive/MyDrive/Chit_TR9207')</code> to change the current working directory to a specific folder named <code class="inline">Chit_TR9207</code> within the user's Drive. This directory contains the necessary input files, such as the aerial orthoimage and GeoJSON file with building footprints. We will also use it to save the outputs of the model, such as predicted masks and evaluation reports.</p>
+            <pre><code># Mount Google Drive
+from google.colab import drive
+drive.mount('/content/drive/')
+os.chdir('/content/drive/MyDrive/Chit_TR9207')</code></pre>
+            <button class="run-button" onclick="showOutput('output-3-2-3')">Run Code</button>
+            <div class="output" id="output-3-2-3">
+Simulated Output (if running in Google Colab):
+<span style="color: blue;">Go to this URL in a browser: https://accounts.google.com/o/oauth2/auth?client_id=...</span>
+<span style="color: blue;">Enter your authorization code:</span>
+<span style="color: green;">Mounted at /content/drive</span>
+Working directory changed to: /content/drive/MyDrive/Chit_TR9207
+Files in Google Drive are now accessible.
+            </div>
+        </div>
+
+        <!-- Step 3.2.4 -->
+        <div class="lab-step" id="step-3-2-4">
+            <h2>3.2.4 Load the raster image and rasterize building footprints</h2>
+            <p>Next, we load the aerial orthoimagery and the corresponding building footprint vector data. The raster image, named <code class="inline">'TR9207a.tif'</code>, is opened using the <code class="inline">rasterio</code> library. Inside the <code class="inline">with rasterio.open(...)</code> context block, we extract key metadata. For example, the <code class="inline">transform</code> object provides the spatial reference for each pixel, the <code class="inline">height</code> and <code class="inline">width</code> of the image, the coordinate reference system (<code class="inline">crs</code>), and the image data itself using <code class="inline">src.read()</code>, which returns a NumPy array of shape (bands, height, width).</p>
+            <pre><code># Load raster and geojson
+img_path = 'TR9207a.tif'
+with rasterio.open(img_path) as src:
+    transform = src.transform
+    height, width = src.height, src.width
+    raster_crs = src.crs
+    image = src.read()</code></pre>
+            <p>Next, we load the building footprint data from a GeoJSON file called <code class="inline">'Bld_DSG_TR9207.geojson'</code> using <code class="inline">geopandas.read_file()</code>, which reads in the vector geometries as a GeoDataFrame. These geometries are then converted into a binary raster mask using the <code class="inline">rasterio.features.rasterize()</code> function. Each building polygon is assigned a pixel value of 1, while the background is filled with 0. The output mask has the same dimensions as the input raster image and will serve as the reference mask for training the segmentation model. This step bridges the vector and raster data formats, preparing them for patch-based training in deep learning.</p>
+            <pre><code>gdf = gpd.read_file('Bld_DSG_TR9207.geojson')
+mask = features.rasterize(
+    ((geom, 1) for geom in gdf.geometry),
+    out_shape=(height, width),
+    transform=transform,
+    fill=0,
+    dtype=np.uint8
+)</code></pre>
+            <button class="run-button" onclick="showOutput('output-3-2-4')">Run Code</button>
+            <div class="output" id="output-3-2-4">
+Simulated Output:
+<span style="color: green;">'TR9207a.tif' loaded successfully.</span>
+Image metadata extracted:
+  - Transform: |a, b, c|
+             |d, e, f|
+             |0, 0, 1| (Affine transformation)
+  - Height: XXXX pixels
+  - Width: YYYY pixels
+  - CRS: EPSG:ZZZZ
+Image data shape: (Number of bands, Height, Width) e.g., (4, 5000, 5000)
+
+<span style="color: green;">'Bld_DSG_TR9207.geojson' loaded successfully.</span>
+Building footprints rasterized into a binary mask.
+Mask data shape: (Height, Width) e.g., (5000, 5000)
+Data ready for dataset creation.
+            </div>
+        </div>
+
+        <!-- Step 3.2.5 -->
+        <div class="lab-step" id="step-3-2-5">
+            <h2>3.2.5 Define the custom dataset for patch extraction</h2>
+            <p>Next, we define a custom PyTorch dataset class called <code class="inline">AerialBuildingDataset</code>, which efficiently manages and serves image-mask patches during model training. A dataset class in PyTorch is a custom Python class that helps you organize and load your training data efficiently. During model training, it tells PyTorch how to read and serve your images and labels. A Python class is a blueprint for creating reusable pieces of code called objects. It lets you group data (variables) and functions (methods) that belong together. The dataset takes two inputs in our code: a multi-band aerial orthoimage (<code class="inline">image</code>) and a corresponding binary segmentation mask (<code class="inline">mask</code>). These inputs are expected to have the shapes (bands, height, width) for the image and (height, width) for the mask.</p>
+            <p>Within the <code class="inline">__init__</code> method, the class sets the patch size to 256×256 pixels and computes the total number of non-overlapping patch coordinates by sliding a window across the image dimensions. Note that in Python, a method is a function written inside a class that can access and modify the class’s data. These top-left coordinates are stored in <code class="inline">self.patch_coords</code>, and where each patch that will be extracted is defined. The <code class="inline">__len__</code> method returns the total number of patches used by PyTorch's data loader to know how many samples are available. The <code class="inline">__getitem__</code> method extracts an image patch and its corresponding mask patch using the indexed coordinates. These patches are then converted to PyTorch tensors—<code class="inline">img_patch</code> as a float tensor (for model input) and <code class="inline">mask_patch</code> as a long integer tensor (for loss calculation). This dataset structure is critical for feeding the U-Net model with appropriately sized training examples and maintaining alignment between inputs and their ground truth labels.</p>
+            <pre><code># Define dataset
+class AerialBuildingDataset(torch.utils.data.Dataset):
+    def __init__(self, image, mask):
+        self.image = image
+        self.mask = mask
+        self.patch_size = 256
+        self.bands, self.height, self.width = image.shape
+        self.patch_coords = [
+            (i, j) for i in range(0, self.height - self.patch_size + 1, self.patch_size)
+                    for j in range(0, self.width - self.patch_size + 1, self.patch_size)
+        ]
+
+    def __len__(self):
+        return len(self.patch_coords)
+
+    def __getitem__(self, idx):
+        i, j = self.patch_coords[idx]
+        img_patch = self.image[:, i:i+self.patch_size, j:j+self.patch_size]
+        mask_patch = self.mask[i:i+self.patch_size, j:j+self.patch_size]
+        img_patch = torch.tensor(img_patch, dtype=torch.float32)
+        mask_patch = torch.tensor(mask_patch, dtype=torch.long)
+        return img_patch, mask_patch</code></pre>
+            <button class="run-button" onclick="showOutput('output-3-2-5')">Run Code</button>
+            <div class="output" id="output-3-2-5">
+Simulated Output:
+<span style="color: green;">Class <code class="inline">AerialBuildingDataset</code> defined successfully.</span>
+This class can now be instantiated to create dataset objects for patch-based training.
+            </div>
+        </div>
+
+        <!-- Step 3.2.6 -->
+        <div class="lab-step" id="step-3-2-6">
+            <h2>3.2.6 Create the dataset and data loaders</h2>
+            <p>In this step, we prepare the training and testing datasets from the full aerial orthoimage and mask using the custom <code class="inline">AerialBuildingDataset</code> class defined earlier. First, we create a single dataset object by passing the whole image and mask. This dataset automatically handles patch extraction and formatting for model training. Next, we split the dataset into training and testing subsets using an 80/20 ratio. The <code class="inline">random_split</code> function randomly divides the data into <code class="inline">train_dataset</code> and <code class="inline">test_dataset</code>, ensuring that the model is evaluated on unseen data.</p>
+            <p>After the split, we use PyTorch’s <code class="inline">DataLoader</code> class to create iterators for both datasets. The <code class="inline">train_loader</code> shuffles the data and sets <code class="inline">drop_last=True</code> to ensure all batches have the same size, which is important for consistent training behavior. The <code class="inline">test_loader</code> does not shuffle the data and keeps all test samples. The batch size is set to 4, meaning the model will process four image-mask patch pairs simultaneously during training and evaluation. This setup enables efficient and scalable training of the U-Net model on aerial orthoimagery.</p>
+            <pre><code># Create dataset and loaders
+dataset = AerialBuildingDataset(image, mask)
+train_size = int(0.8 * len(dataset))
+test_size = len(dataset) - train_size
+train_dataset, test_dataset = random_split(dataset, [train_size, test_size])
+train_loader = DataLoader(train_dataset, batch_size=4, shuffle=True, drop_last=True)
+test_loader = DataLoader(test_dataset, batch_size=4, shuffle=False)</code></pre>
+            <button class="run-button" onclick="showOutput('output-3-2-6')">Run Code</button>
+            <div class="output" id="output-3-2-6">
+Simulated Output:
+<span style="color: green;">Dataset created.</span> Total patches: (e.g., 361, depends on image and patch size)
+Splitting dataset:
+  - Training set size: (e.g., 288 patches)
+  - Test set size: (e.g., 73 patches)
+<span style="color: green;">DataLoaders created successfully.</span>
+  - <code class="inline">train_loader</code>: batch_size=4, shuffle=True, drop_last=True
+  - <code class="inline">test_loader</code>: batch_size=4, shuffle=False
+Data is ready for model training.
+            </div>
+        </div>
+
+        <!-- Step 3.2.7 -->
+        <div class="lab-step" id="step-3-2-7">
+            <h2>3.2.7 Define the U-Net architecture</h2>
+            <p>Next, we define the U-Net model, which we will implement as a custom PyTorch module called <code class="inline">UNet</code> that inherits from <code class="inline">nn.Module</code>. The architecture follows an encoder–decoder structure. The encoder consists of four convolutional blocks (<code class="inline">enc1</code> to <code class="inline">enc4</code>), each followed by a max pooling layer (<code class="inline">pool1</code> to <code class="inline">pool4</code>) that reduces spatial resolution and captures increasingly abstract features.</p>
+            <p>Each encoder block is created using a helper function <code class="inline">CBR</code>, which stands for Convolution → Batch Normalization → ReLU (Rectified Linear Unit) activation. This function applies two convolutional layers with padding to preserve spatial dimensions and ReLU activations for non-linearity. Batch normalization is a technique used to stabilize and accelerate the training of deep neural networks by normalizing the inputs to each layer. It works by adjusting and scaling the activations within a mini-batch so they have a mean of 0 and a standard deviation of 1. ReLU is an activation function that makes the model nonlinear. It gives zero for negative values and keeps positive values unchanged.</p>
+            <p>So what does the encoder do? In the encoder part of the U-Net architecture, the model processes the input image through a series of convolutional blocks and pooling operations to gradually extract and condense spatial features. Each convolutional block is defined using a helper function called <code class="inline">CBR(in_ch, out_ch)</code>. For example, <code class="inline">CBR(3, 64)</code> takes an input with 3 channels (such as an RGB image) and outputs 64 feature maps after applying convolutional operations and a ReLU function. The 64 feature maps come from applying 64 convolutional filters to the input image. These blocks learn to identify spatial patterns like edges, textures, and shapes. Following each CBR block is a pooling layer, such as <code class="inline">nn.MaxPool2d(2)</code>, which performs max pooling with a 2×2 window. This operation downsamples the feature maps—cutting their height and width in half—while preserving the most prominent features. This pattern continues deeper into the network: <code class="inline">CBR(64, 128)</code> extracts 128 features from the previous 64, then <code class="inline">nn.MaxPool2d(2)</code> reduces the size again. This structure is repeated, increasing the number of channels to capture more complex features while reducing spatial resolution to focus on the most informative parts of the image.</p>
+            <p>At the center of the U-Net architecture is a bottleneck layer, which acts like a bridge between the encoder (downsampling path) and the decoder (upsampling path). This layer has the highest number of filters—1024. This means it can learn and store a large amount of abstract information from the input image. While the earlier layers focus on simple features like edges or textures, the bottleneck captures more complex and high-level patterns crucial for identifying buildings. It is key in summarizing the most important information before the decoder reconstructs the segmented output.</p>
+            <p>The decoder rebuilds the image by using transposed convolutions (<code class="inline">up4</code> to <code class="inline">up1</code>) to upsample the feature maps. At each step, it joins (concatenates) these upsampled features with matching features from the encoder to keep important details. Then it refines them using convolution blocks. These concatenated tensors are passed through decoding blocks (<code class="inline">dec4</code> to <code class="inline">dec1</code>) using the same <code class="inline">CBR</code> function.</p>
+            <p>Finally, an 1×1 convolution layer named <code class="inline">final</code> reduces the output to two channels—representing the class logits for background and building—for each pixel in the patch. This modular design ensures that spatial details are preserved while learning abstract representations, making U-Net especially effective for segmentation of buildings in aerial orthoimagery.</p>
+            <p>The <code class="inline">forward</code> method defines how input data flows through the U-Net model during training or inference. The process begins with the encoder path, known as the contracting path. Here, the input image <code class="inline">x</code> passes through a series of convolutional blocks (<code class="inline">enc1</code> to <code class="inline">enc4</code>), each followed by a max-pooling layer that reduces the spatial resolution while increasing the number of feature channels. This allows the network to capture more abstract and high-level patterns in the image progressively. The deepest part of the network is the bottleneck layer, <code class="inline">self.middle</code>, which learns highly compressed and complex features at the smallest spatial scale.</p>
+            <p>After this, the model enters the decoder path, or expanding path. It gradually upsamples the feature maps using transposed convolutions (<code class="inline">up4</code> to <code class="inline">up1</code>). At each level, the upsampled features are concatenated with the corresponding feature maps from the encoder via skip connections. These connections help preserve important spatial details that might have been lost during downsampling. The concatenated tensors are then refined through convolutional blocks (<code class="inline">dec4</code> to <code class="inline">dec1</code>) to reconstruct a high-resolution feature map. Finally, the <code class="inline">self.final</code> layer applies a 1×1 convolution to reduce the number of channels to 2. This produces the segmentation logits for two classes (e.g., building vs. background). The output has the same height and width as the input image, making it suitable for pixel-wise classification in semantic segmentation tasks.</p>
+            <pre><code># Define U-Net model for semantic segmentation
+class UNet(nn.Module):
+    def __init__(self):
+        super(UNet, self).__init__()
+
+        # Helper function: Convolution -> ReLU -> Convolution -> ReLU
+        def CBR(in_ch, out_ch):
+            return nn.Sequential(
+                nn.Conv2d(in_ch, out_ch, 3, padding=1),  # 1st Conv layer
+                nn.ReLU(),                              # ReLU activation
+                nn.Conv2d(out_ch, out_ch, 3, padding=1), # 2nd Conv layer
+                nn.ReLU()                               # ReLU activation
+            )
+        
+        # Encoder (Downsampling path)
+        self.enc1 = CBR(3, 64)            # First encoder block (input: RGB image)
+        self.pool1 = nn.MaxPool2d(2)      # Downsample by factor of 2
+        self.enc2 = CBR(64, 128)          # Second encoder block
+        self.pool2 = nn.MaxPool2d(2)
+        self.enc3 = CBR(128, 256)         # Third encoder block
+        self.pool3 = nn.MaxPool2d(2)
+        self.enc4 = CBR(256, 512)         # Fourth encoder block
+        self.pool4 = nn.MaxPool2d(2)
+
+        # Bottleneck layer (deepest representation)
+        self.middle = CBR(512, 1024)      # Captures most abstract features
+
+        # Decoder (Upsampling path)
+        self.up4 = nn.ConvTranspose2d(1024, 512, 2, 2)  # Upsample to match encoder-4
+        self.dec4 = CBR(1024, 512)                      # Decoder block with skip connection from enc4
+
+        self.up3 = nn.ConvTranspose2d(512, 256, 2, 2)   # Upsample to match encoder-3
+        self.dec3 = CBR(512, 256)                       # Decoder block with skip connection from enc3
+
+        self.up2 = nn.ConvTranspose2d(256, 128, 2, 2)   # Upsample to match encoder-2
+        self.dec2 = CBR(256, 128)                       # Decoder block with skip connection from enc2
+
+        self.up1 = nn.ConvTranspose2d(128, 64, 2, 2)    # Upsample to match encoder-1
+        self.dec1 = CBR(128, 64)                        # Decoder block with skip connection from enc1
+
+        # Final 1x1 convolution to produce 2-channel output (background vs building)
+        self.final = nn.Conv2d(64, 2, kernel_size=1)
+
+    def forward(self, x):
+        # Encoder path (contracting)
+        e1 = self.enc1(x)                # Output shape: [B, 64, H, W]
+        e2 = self.enc2(self.pool1(e1))   # [B, 128, H/2, W/2]
+        e3 = self.enc3(self.pool2(e2))   # [B, 256, H/4, W/4]
+        e4 = self.enc4(self.pool3(e3))   # [B, 512, H/8, W/8]
+
+        # Bottleneck
+        m = self.middle(self.pool4(e4))  # [B, 1024, H/16, W/16]
+
+        # Decoder path (expanding) with skip connections
+        d4 = self.dec4(torch.cat([self.up4(m), e4], dim=1))  # [B, 512, H/8, W/8]
+        d3 = self.dec3(torch.cat([self.up3(d4), e3], dim=1)) # [B, 256, H/4, W/4]
+        d2 = self.dec2(torch.cat([self.up2(d3), e2], dim=1)) # [B, 128, H/2, W/2]
+        d1 = self.dec1(torch.cat([self.up1(d2), e1], dim=1)) # [B, 64, H, W]
+
+        # Final prediction map
+        return self.final(d1)  # Output shape: [B, 2, H, W] (logits for 2 classes)</code></pre>
+            <button class="run-button" onclick="showOutput('output-3-2-7')">Run Code</button>
+            <div class="output" id="output-3-2-7">
+Simulated Output:
+<span style="color: green;">Class <code class="inline">UNet</code> defined successfully.</span>
+This U-Net model architecture is ready to be instantiated for training.
+            </div>
+        </div>
+
+        <!-- Step 3.2.8 -->
+        <div class="lab-step" id="step-3-2-8">
+            <h2>3.2.8 Initialize the U-Net model, optimizer, and loss function</h2>
+            <p>Next, we initialize the key components needed to train the U-Net model, including the model itself, the optimizer, and the loss function. We will also print a summary of the model architecture. In this code, we create the U-Net model and assign it to run on a GPU if available, significantly speeding up training. The <code class="inline">device</code> variable stores this hardware choice for consistent use throughout training and evaluation. We select the Adam optimizer for its efficiency and adaptability, with a learning rate set to 0.0001. We also use the <code class="inline">CrossEntropyLoss</code> to solve a semantic segmentation task where each pixel is classified as building or background. Finally, the <code class="inline">summary()</code> function prints a structured overview of the U-Net architecture, showing the number of parameters in each layer and the size of feature maps, which helps confirm that the model is set up correctly.</p>
+            <pre><code># Instantiate the U-Net model and move it to GPU if available, otherwise use CPU
+model = UNet().to('cuda' if torch.cuda.is_available() else 'cpu')
+# Automatically detect and store the device used (GPU or CPU) for future reference
+device = next(model.parameters()).device
+# Initialize the Adam optimizer to update model weights during training
+optimizer = optim.Adam(model.parameters(), lr=1e-4)
+# Define the loss function: CrossEntropyLoss is used for pixel-wise classification
+criterion = nn.CrossEntropyLoss()
+# Print a summary of the model architecture: layers, output shapes, and parameters
+summary(model, input_size=(3, 256, 256))</code></pre>
+            <div class="notes">
+                <h3>Notes on Adam Optimizer</h3>
+                <p>The Adam (Adaptive Moment Estimation) optimizer is a widely used optimization algorithm in deep learning because of its speed, stability, and adaptability. It combines the benefits of two other methods—Momentum and RMSProp. Momentum helps accelerate training by smoothing out the updates based on past gradients, while RMSProp adjusts the learning rate for each parameter based on how frequently it changes. Adam brings these two ideas together by keeping track of the average of the gradients and the average of the squared gradients for each parameter. This allows it to adjust the learning rate automatically during training, making it well-suited for complex models and noisy data. Because of its ability to adapt and converge quickly, Adam is often used as the default optimizer in many neural network applications.</p>
+            </div>
+            <button class="run-button" onclick="showOutput('output-3-2-8')">Run Code</button>
+            <div class="output" id="output-3-2-8">
+Simulated Output:
+<span style="color: green;">U-Net model instantiated and moved to device: [cuda/cpu].</span>
+<span style="color: green;">Adam optimizer initialized with learning rate 0.0001.</span>
+<span style="color: green;">CrossEntropyLoss criterion set.</span>
+
+Model Summary:
+<pre style="background-color: #ecf0f1; color: #34495e; font-size: 0.85em;">
+----------------------------------------------------------------
+        Layer (type)               Output Shape         Param #
+================================================================
+            Conv2d-1         [-1, 64, 256, 256]           1,792
+              ReLU-2         [-1, 64, 256, 256]               0
+            Conv2d-3         [-1, 64, 256, 256]          36,928
+              ReLU-4         [-1, 64, 256, 256]               0
+         MaxPool2d-5         [-1, 64, 128, 128]               0
+            Conv2d-6        [-1, 128, 128, 128]          73,856
+              ReLU-7        [-1, 128, 128, 128]               0
+            Conv2d-8        [-1, 128, 128, 128]         147,584
+              ReLU-9        [-1, 128, 128, 128]               0
+        MaxPool2d-10        [-1, 128, 64, 64]               0
+           Conv2d-11        [-1, 256, 64, 64]         295,168
+             ReLU-12        [-1, 256, 64, 64]               0
+           Conv2d-13        [-1, 256, 64, 64]         590,080
+             ReLU-14        [-1, 256, 64, 64]               0
+        MaxPool2d-15        [-1, 256, 32, 32]               0
+           Conv2d-16        [-1, 512, 32, 32]       1,180,160
+             ReLU-17        [-1, 512, 32, 32]               0
+           Conv2d-18        [-1, 512, 32, 32]       2,359,808
+             ReLU-19        [-1, 512, 32, 32]               0
+        MaxPool2d-20        [-1, 512, 16, 16]               0
+           Conv2d-21       [-1, 1024, 16, 16]       4,719,616
+             ReLU-22       [-1, 1024, 16, 16]               0
+           Conv2d-23       [-1, 1024, 16, 16]       9,438,208
+             ReLU-24       [-1, 1024, 16, 16]               0
+ ConvTranspose2d-25        [-1, 512, 32, 32]       2,097,664
+           Conv2d-26        [-1, 512, 32, 32]       4,719,616  (after concat with e4, in_ch=1024)
+             ReLU-27        [-1, 512, 32, 32]               0
+           Conv2d-28        [-1, 512, 32, 32]       2,359,808
+             ReLU-29        [-1, 512, 32, 32]               0
+ ConvTranspose2d-30        [-1, 256, 64, 64]         524,544
+           Conv2d-31        [-1, 256, 64, 64]       1,180,160  (after concat with e3, in_ch=512)
+             ReLU-32        [-1, 256, 64, 64]               0
+           Conv2d-33        [-1, 256, 64, 64]         590,080
+             ReLU-34        [-1, 256, 64, 64]               0
+ ConvTranspose2d-35        [-1, 128, 128, 128]         131,200
+           Conv2d-36        [-1, 128, 128, 128]         295,168  (after concat with e2, in_ch=256)
+             ReLU-37        [-1, 128, 128, 128]               0
+           Conv2d-38        [-1, 128, 128, 128]         147,584
+             ReLU-39        [-1, 128, 128, 128]               0
+ ConvTranspose2d-40         [-1, 64, 256, 256]          32,832
+           Conv2d-41         [-1, 64, 256, 256]          73,856  (after concat with e1, in_ch=128)
+             ReLU-42         [-1, 64, 256, 256]               0
+           Conv2d-43         [-1, 64, 256, 256]          36,928
+             ReLU-44         [-1, 64, 256, 256]               0
+           Conv2d-45          [-1, 2, 256, 256]             130
+================================================================
+Total params: 31,038,722 (approx, actual value may differ slightly)
+Trainable params: 31,038,722
+Non-trainable params: 0
+----------------------------------------------------------------
+Input size (MB): 0.75
+Forward/backward pass size (MB): 109.50 (approx)
+Params size (MB): 118.40 (approx)
+Estimated Total Size (MB): 228.65 (approx)
+----------------------------------------------------------------
+</pre>
+(Note: The parameter count in the summary above is based on the U-Net architecture as described. The CBR block structure (Conv-ReLU-Conv-ReLU) and concatenation in the decoder impact these numbers.)
+            </div>
+        </div>
+
+        <!-- Step 3.2.9 -->
+        <div class="lab-step" id="step-3-2-9">
+            <h2>3.2.9 Implementing the training loop with early stopping</h2>
+            <p>Next, we implement a training loop for a U-Net model that runs for up to 20 epochs, incorporating early stopping to prevent overfitting. The goal is to monitor model performance and stop training once the validation loss stops improving for a specified number of epochs (defined by <code class="inline">patience</code>).</p>
+            <p>Initially, we initialize four lists—<code class="inline">train_losses</code>, <code class="inline">test_losses</code>, <code class="inline">train_accuracies</code>, and <code class="inline">test_accuracies</code>—to record performance metrics over time. We also set up early stopping variables: <code class="inline">best_val_loss</code> (initially set to infinity), <code class="inline">early_stopping_counter</code> (to track consecutive non-improving epochs), and <code class="inline">patience</code> (set to 5 epochs). We will also define a path for saving the best-performing model as <code class="inline">"best_unet_model.pth"</code>.</p>
+            <p>During each epoch, the model enters training mode using <code class="inline">model.train()</code>, enabling layers like dropout and batch normalization to behave appropriately. It then iterates over the training dataset in batches. For each batch, only the first three channels of the image tensor are used (to simulate RGB input), and the batch is passed through the model to obtain predictions. The loss between predictions and the ground truth masks is computed using the cross-entropy criterion. Then, standard backpropagation is performed via <code class="inline">loss.backward()</code>, followed by a weight update step using the optimizer. The total loss and number of correctly predicted pixels are tracked to calculate training accuracy.</p>
+            <p>Once the epoch's training loop completes, the model switches to evaluation mode with <code class="inline">model.eval()</code> and disables gradient tracking using <code class="inline">torch.no_grad()</code>, which improves efficiency. The model is then evaluated on the test dataset in the same manner as during training, but without updating the model's weights. The validation loss and accuracy are computed and stored.</p>
+            <p>Finally, the early stopping logic is applied. If the current epoch's validation loss is lower than any previously recorded, the model is saved, and the counter is reset. If there is no improvement, the <code class="inline">early_stopping_counter</code> increases. When this counter reaches the defined <code class="inline">patience</code> threshold (5 consecutive non-improving epochs), the training loop is terminated early. This mechanism helps reduce overfitting and ensures that the best-performing model is retained.</p>
+            <pre><code># Training loop with early stopping
+# Initialize tracking metrics and early stopping parameters
+train_losses = []
+test_losses = []
+train_accuracies = []
+test_accuracies = []
+
+best_val_loss = float('inf')  # Start with worst possible loss
+early_stopping_counter = 0
+patience = 5  # Allowed consecutive epochs without improvement
+best_model_path = 'best_unet_model.pth'  # Path to save best model
+
+for epoch in range(20): # Max 20 epochs
+    # Training phase
+    model.train()
+    total_loss, correct_train, total_train = 0, 0, 0
+    for imgs, masks in train_loader:
+        # Keep only RGB channels and move to device
+        imgs, masks = imgs[:, :3, :, :].to(device), masks.to(device)
+        
+        # Forward pass and loss calculation
+        optimizer.zero_grad()
+        preds = model(imgs)
+        loss = criterion(preds, masks)
+        
+        # Backpropagation and weight update
+        loss.backward()
+        optimizer.step()
+
+        # Accumulate metrics
+        total_loss += loss.item()
+        pred_labels = torch.argmax(preds, dim=1)  # Get class indices
+        correct_train += (pred_labels == masks).sum().item()
+        total_train += masks.numel()  # Total pixels in batch
+    
+    # Calculate epoch training metrics
+    train_acc = correct_train / total_train
+    train_losses.append(total_loss / len(train_loader))
+    train_accuracies.append(train_acc)
+
+    # Evaluation phase
+    model.eval()
+    test_loss, correct_test, total_test = 0, 0, 0
+    with torch.no_grad():  # Disable gradient computation
+        for imgs, masks in test_loader:
+            imgs, masks = imgs[:, :3, :, :].to(device), masks.to(device)
+            preds = model(imgs)
+            test_loss += criterion(preds, masks).item()
+            
+            # Calculate validation accuracy
+            pred_labels = torch.argmax(preds, dim=1)
+            correct_test += (pred_labels == masks).sum().item()
+            total_test += masks.numel()
+    
+    # Calculate epoch validation metrics
+    test_acc = correct_test / total_test
+    avg_test_loss = test_loss / len(test_loader)
+    test_losses.append(avg_test_loss)
+    test_accuracies.append(test_acc)
+
+    # Print progress
+    print(f"Epoch {epoch+1}: Train Loss = {train_losses[-1]:.4f}, "
+          f"Test Loss = {avg_test_loss:.4f}, "
+          f"Train Acc = {train_acc:.4f}, Test Acc = {test_acc:.4f}")
+
+    # Early stopping check
+    if avg_test_loss < best_val_loss:
+        best_val_loss = avg_test_loss
+        early_stopping_counter = 0
+        torch.save(model.state_dict(), best_model_path)
+        print("Model improved. Saving best model.")
+    else:
+        early_stopping_counter += 1
+        print(f"No improvement. Early stopping counter: {early_stopping_counter}/{patience}")
+        if early_stopping_counter >= patience:
+            print("Early stopping triggered.")
+            break</code></pre>
+            <button class="run-button" onclick="showOutput('output-3-2-9')">Run Code</button>
+            <div class="output" id="output-3-2-9">
+Simulated Output:
+Epoch 1: Train Loss = 0.5832, Test Loss = 0.4512, Train Acc = 0.7580, Test Acc = 0.8105
+Model improved. Saving best model.
+Epoch 2: Train Loss = 0.3987, Test Loss = 0.3105, Train Acc = 0.8530, Test Acc = 0.8812
+Model improved. Saving best model.
+Epoch 3: Train Loss = 0.2850, Test Loss = 0.2550, Train Acc = 0.9015, Test Acc = 0.9150
+Model improved. Saving best model.
+...
+Epoch 8: Train Loss = 0.1520, Test Loss = 0.1988, Train Acc = 0.9550, Test Acc = 0.9350
+Model improved. Saving best model.
+Epoch 9: Train Loss = 0.1450, Test Loss = 0.2010, Train Acc = 0.9580, Test Acc = 0.9340
+No improvement. Early stopping counter: 1/5
+Epoch 10: Train Loss = 0.1400, Test Loss = 0.1995, Train Acc = 0.9600, Test Acc = 0.9345
+No improvement. Early stopping counter: 2/5
+...
+Epoch 13: Train Loss = 0.1250, Test Loss = 0.2050, Train Acc = 0.9650, Test Acc = 0.9320
+No improvement. Early stopping counter: 5/5
+<span style="color: red;">Early stopping triggered.</span>
+Training finished. Best model saved to <code class="inline">'best_unet_model.pth'</code>.
+(Note: Loss and accuracy values are illustrative.)
+            </div>
+        </div>
+
+        <!-- Step 3.2.10 -->
+        <div class="lab-step" id="step-3-2-10">
+            <h2>3.2.10 Visualize training and test loss</h2>
+            <p>Next, we create a plot to visualize how the model's loss changes over training epochs. This visualization helps us understand whether the model is learning effectively and if overfitting or underfitting is occurring. The x-axis represents training epochs in this plot, while the y-axis shows the loss values. The <code class="inline">train_losses</code> and <code class="inline">test_losses</code> lists are plotted to show how well the model minimizes the error during training and performs on unseen test data. Ideally, you want both curves to decrease over time. If the test loss increases while the training loss continues decreasing, it may indicate overfitting. This plot is a quick and effective diagnostic tool for evaluating model training progress.</p>
+            <pre><code># Create a new figure with a custom size for better readability
+plt.figure(figsize=(12, 5))
+# Plot training and test loss over epochs in the first subplot
+plt.subplot(1, 2, 1)  # (1 row, 2 columns, 1st subplot)
+plt.plot(train_losses, label='Train Loss')  # Plot training loss values
+plt.plot(test_losses, label='Test Loss')    # Plot test loss values
+plt.xlabel('Epoch')                         # Label x-axis
+plt.ylabel('Loss')                          # Label y-axis
+plt.title('Training and Test Loss')         # Set title of the plot
+plt.legend()                                # Add legend to distinguish the curves</code></pre>
+            <button class="run-button" onclick="showOutput('output-3-2-10')">Run Code</button>
+            <div class="output" id="output-3-2-10">
+Simulated Action:
+<span style="color: green;">Code executed. A plot is generated.</span>
+<div class="plot-description">
+    <strong>Plot Description (Loss):</strong>
+    <p>A line graph will be displayed with 'Epoch' on the X-axis and 'Loss' on the Y-axis. Two lines will be visible:</p>
+    <ul>
+        <li><strong>Train Loss (e.g., blue line):</strong> Shows the model's loss on the training data for each epoch. This line should generally decrease, indicating the model is learning.</li>
+        <li><strong>Test Loss (e.g., orange line):</strong> Shows the model's loss on the unseen test data for each epoch. Ideally, this line also decreases and stays close to the training loss. If it starts to increase while training loss decreases, it's a sign of overfitting.</li>
+    </ul>
+    <p>This plot helps in understanding the learning dynamics and diagnosing issues like overfitting or underfitting.</p>
+</div>
+            </div>
+        </div>
+
+        <!-- Step 3.2.11 -->
+        <div class="lab-step" id="step-3-2-11">
+            <h2>3.2.11 Visualize training and test accuracy</h2>
+            <p>Next, we visualize model performance by plotting the accuracy curves for both training and test datasets. Accuracy helps evaluate how well the model is correctly classifying building versus non-building pixels.</p>
+            <pre><code># Create the second subplot to plot accuracy values
+plt.subplot(1, 2, 2)  # (1 row, 2 columns, 2nd subplot)
+plt.plot(train_accuracies, label='Train Accuracy')  # Plot training accuracy over epochs
+plt.plot(test_accuracies, label='Test Accuracy')    # Plot test accuracy over epochs
+plt.xlabel('Epoch')                                 # Label x-axis as 'Epoch'
+plt.ylabel('Accuracy')                              # Label y-axis as 'Accuracy'
+plt.title('Training and Test Accuracy')             # Title for the accuracy plot
+plt.legend()                                        # Show legend to differentiate curves
+
+# Adjust subplot layout to prevent overlap
+plt.tight_layout()
+
+# Display the plots
+plt.show()</code></pre>
+            <button class="run-button" onclick="showOutput('output-3-2-11')">Run Code</button>
+            <div class="output" id="output-3-2-11">
+Simulated Action:
+<span style="color: green;">Code executed. A second plot (or a combined figure) is generated and displayed.</span>
+<div class="plot-description">
+    <strong>Plot Description (Accuracy):</strong>
+    <p>A line graph will be displayed (often next to the loss plot if <code class="inline">plt.subplot</code> was used for a combined figure) with 'Epoch' on the X-axis and 'Accuracy' on the Y-axis. Two lines will be visible:</p>
+    <ul>
+        <li><strong>Train Accuracy (e.g., blue line):</strong> Shows the model's accuracy on the training data for each epoch. This line should generally increase.</li>
+        <li><strong>Test Accuracy (e.g., orange line):</strong> Shows the model's accuracy on the unseen test data. This should also increase. A significant gap between training and test accuracy can indicate overfitting.</li>
+    </ul>
+    <p>The <code class="inline">plt.tight_layout()</code> command ensures that subplots and labels do not overlap. <code class="inline">plt.show()</code> displays the complete figure with both loss and accuracy plots.</p>
+</div>
+            </div>
+        </div>
+
+        <!-- Step 3.2.12 -->
+        <div class="lab-step" id="step-3-2-12">
+            <h2>3.2.12 Load and prepare the best model for inference</h2>
+            <p>After training with early stopping, we load the best-performing version of the U-Net model—based on the lowest validation loss—and prepare it for evaluation or prediction. In this step, the model's parameters are restored from the file <code class="inline">"best_unet_model.pth"</code> using <code class="inline">load_state_dict()</code>. This ensures that the model used in further evaluation or prediction reflects the best performance achieved during training. The <code class="inline">model.eval()</code> command switches the model into inference mode, which disables any training-specific behavior such as dropout and ensures consistent results. Finally, a message is printed to confirm the best model has been successfully loaded from storage.</p>
+            <pre><code># Load the saved model weights from the file where the best model was stored
+model.load_state_dict(torch.load(best_model_path))
+
+# Set the model to evaluation mode (disables dropout, etc.)
+model.eval()
+
+# Print confirmation that the model has been loaded
+print("Best model loaded from file.")</code></pre>
+            <button class="run-button" onclick="showOutput('output-3-2-12')">Run Code</button>
+            <div class="output" id="output-3-2-12">
+Simulated Output:
+<span style="color: green;">Best model loaded from file.</span>
+The model weights from <code class="inline">'best_unet_model.pth'</code> are now loaded, and the model is in evaluation mode, ready for inference.
+            </div>
+        </div>
+
+        <!-- Step 3.2.13 -->
+        <div class="lab-step" id="step-3-2-13">
+            <h2>3.2.13 Performing inference on the full image using the trained model</h2>
+            <p>Next, we perform inference on the entire aerial image using the trained U-Net model by dividing the image into smaller patches, predicting the segmentation mask for each patch, and then assembling the full prediction. In this process, the image is divided into non-overlapping 256×256 patches—the same size used during training. Each patch is fed into the trained U-Net model, which outputs a prediction indicating whether each pixel belongs to a building or background. These predictions are stitched together to form a complete segmentation map of the entire image. This approach allows large images to be processed piece by piece, avoiding memory issues and ensuring consistency with the training setup.</p>
+            <pre><code># Inference on full image
+dataset_patch_size = 256 # Should match patch_size used in AerialBuildingDataset
+full_pred_mask = np.zeros((height, width), dtype=np.uint8) # Uses 'height' and 'width' from step 3.2.4
+model.eval() # Ensure model is in evaluation mode
+
+with torch.no_grad(): # Disable gradient calculations for inference
+    for i in range(0, height - dataset_patch_size + 1, dataset_patch_size):
+        for j in range(0, width - dataset_patch_size + 1, dataset_patch_size):
+            # Extract patch (ensure only 3 channels if model expects RGB)
+            patch = image[:3, i:i+dataset_patch_size, j:j+dataset_patch_size] 
+            # Convert patch to tensor, add batch dimension, and move to device
+            patch_tensor = torch.tensor(patch, dtype=torch.float32).unsqueeze(0).to(device)
+            
+            output = model(patch_tensor) # Get model prediction
+            # Get predicted class labels (argmax over channel dimension) and move to CPU
+            pred_patch = torch.argmax(output, dim=1).squeeze().cpu().numpy()
+            
+            # Stitch patch prediction into the full prediction mask
+            full_pred_mask[i:i+dataset_patch_size, j:j+dataset_patch_size] = pred_patch
+</code></pre>
+            <button class="run-button" onclick="showOutput('output-3-2-13')">Run Code</button>
+            <div class="output" id="output-3-2-13">
+Simulated Output:
+Processing image patch by patch for full inference...
+(This may take some time depending on the image size and hardware.)
+...
+<span style="color: green;">Full image inference complete.</span>
+The <code class="inline">full_pred_mask</code> (NumPy array of shape (height, width)) now contains the segmentation predictions for the entire image.
+            </div>
+        </div>
+
+        <!-- Step 3.2.14 -->
+        <div class="lab-step" id="step-3-2-14">
+            <h2>3.2.14 Evaluate full image segmentation using standard metrics</h2>
+            <p>Next, we calculate Intersection over Union (IoU), also known as the Jaccard Index, the F1-score, and the Dice coefficient metrics to assess the performance of the trained U-Net model on the full predicted image mask. These metrics help measure how well the model detects building footprints compared to the reference or ground truth masks. IoU quantifies the overlap between the predicted and actual building areas by dividing the area of intersection by the area of union. The F1-score is particularly useful when buildings occupy a small portion of the image, making the classes imbalanced. It combines precision and recall to reflect how wholly and accurately the model identifies buildings. The Dice coefficient is another overlap-based metric that behaves similarly to IoU but is slightly more forgiving of small errors. It emphasizes how well the predicted and actual building areas match, often producing higher scores than IoU for the same prediction. The boundary IoU checks if the edges of predicted buildings align well with the true outlines. Together, these metrics provide a comprehensive understanding of the model’s segmentation quality.</p>
+            <pre><code># Define a function to calculate the Dice Coefficient (overlap measure)
+def dice_coefficient(preds, masks):
+    preds = preds.flatten()  # Flatten the prediction mask to 1D
+    masks = masks.flatten()  # Flatten the ground truth mask to 1D
+    intersection = ((preds == 1) & (masks == 1)).sum()  # Count overlapping pixels
+    # Compute Dice score, add epsilon (1e-7) to denominator to avoid division by zero
+    return 2.0 * intersection / ((preds == 1).sum() + (masks == 1).sum() + 1e-7)  
+
+# Define a function to calculate Boundary IoU (how well edges align)
+# Note: Ensure 'import scipy.ndimage as nd' is done (e.g., in step 3.2.2)
+def boundary_iou(preds, masks, dilation_radius=1):
+    # Define 2D binary structure for morphological operations
+    struct = nd.generate_binary_structure(2, 1)
+
+    # Extract boundaries from predicted and true masks using erosion
+    # XOR operation finds pixels present in one mask but not the eroded version (i.e., boundary)
+    boundary_pred = np.logical_xor(preds, nd.binary_erosion(preds, structure=struct))
+    boundary_mask = np.logical_xor(masks, nd.binary_erosion(masks, structure=struct))
+
+    # Optionally dilate boundaries to allow for small misalignments
+    if dilation_radius > 0:
+        boundary_pred = nd.binary_dilation(boundary_pred, structure=struct, iterations=dilation_radius)
+        boundary_mask = nd.binary_dilation(boundary_mask, structure=struct, iterations=dilation_radius)
+
+    # Calculate intersection and union of boundary pixels
+    intersection = np.logical_and(boundary_pred, boundary_mask).sum()
+    union = np.logical_or(boundary_pred, boundary_mask).sum()
+
+    return intersection / (union + 1e-7)  # Return boundary IoU score, add epsilon for stability
+
+# Flatten both the true mask and predicted mask to prepare for metric calculation
+# 'mask' is the ground truth from step 3.2.4, 'full_pred_mask' from step 3.2.13
+y_true = mask.flatten()
+y_pred = full_pred_mask.flatten()
+
+# Compute standard segmentation metrics
+iou = jaccard_score(y_true, y_pred, average='binary')  # Intersection over Union
+f1 = f1_score(y_true, y_pred, average='binary')        # F1 Score (harmonic mean of precision and recall)
+dice = dice_coefficient(full_pred_mask, mask)          # Dice coefficient using custom function
+# For boundary_iou, ensure inputs are boolean masks (True for building, False for background)
+b_iou = boundary_iou(full_pred_mask == 1, mask == 1)   # Boundary IoU using custom function
+
+# Display the metric results
+print(f"IoU Score: {iou:.4f}")
+print(f"F1 Score: {f1:.4f}")
+print(f"Dice Coefficient: {dice:.4f}")
+print(f"Boundary IoU: {b_iou:.4f}")</code></pre>
+            <button class="run-button" onclick="showOutput('output-3-2-14')">Run Code</button>
+            <div class="output" id="output-3-2-14">
+Simulated Output:
+<span style="color: green;">Helper functions <code class="inline">dice_coefficient</code> and <code class="inline">boundary_iou</code> defined.</span>
+<span style="color: green;">Metrics calculated based on the full predicted mask and ground truth mask.</span>
+
+IoU Score: 0.7850
+F1 Score: 0.8795
+Dice Coefficient: 0.8795
+Boundary IoU: 0.6530
+
+(Note: These are example scores. Actual scores will vary based on model performance.)
+            </div>
+        </div>
+
+        <!-- Step 3.2.15 -->
+        <div class="lab-step" id="step-3-2-15">
+            <h2>3.2.15 Exporting and regularizing predicted building polygons</h2>
+            <p>Next, we convert the predicted binary mask of building footprints into vector polygons, saves them as a GeoJSON file. Then we apply geometric regularization to improve the shape quality of the buildings. This first block takes the full predicted mask (produced by the U-Net model), extracts the pixel regions labeled as buildings (<code class="inline">v == 1</code>), and uses <code class="inline">rasterio.features.shapes()</code> to convert them into vector polygons. These polygons are then saved in GeoJSON format with the appropriate coordinate reference system. The second block improves the quality of the extracted building footprints. It loads the previously saved prediction polygons and passes them through the <code class="inline">regularize_geodataframe()</code> function from the <code class="inline">buildingregulariser</code> library. We adjust building edges to be more rectilinear, removes irregularities, and ensures cleaner geometry. This regularization step results in more realistic and usable vector data for mapping or urban analysis. The cleaned geometries are saved to a new GeoJSON file.</p>
+            <pre><code># Save predicted mask as polygons
+# 'full_pred_mask', 'transform', 'raster_crs' are from previous steps
+results = (
+    {'properties': {'raster_val': v}, 'geometry': s}
+    for s, v in features.shapes(full_pred_mask.astype(np.int16), transform=transform)
+    if v == 1  # Extract only building polygons (pixel value 1)
+)
+geoms = list(results)
+gdf_pred = gpd.GeoDataFrame.from_features(geoms, crs=raster_crs)
+gdf_pred.to_file('chit_predicted_blds.geojson', driver='GeoJSON')
+print("Predicted building footprints saved to chit_predicted_blds.geojson")
+
+# Regularize predicted polygons
+buildings = gpd.read_file("chit_predicted_blds.geojson")
+regularized_buildings = regularize_geodataframe(buildings) # Default regularization parameters
+regularized_buildings.to_file("regularized_buildings.geojson", driver="GeoJSON")
+print("Regularized building footprints saved to regularized_buildings.geojson")</code></pre>
+            <button class="run-button" onclick="showOutput('output-3-2-15')">Run Code</button>
+            <div class="output" id="output-3-2-15">
+Simulated Output:
+<span style="color: green;">Predicted building footprints saved to chit_predicted_blds.geojson</span>
+Loading <code class="inline">chit_predicted_blds.geojson</code> for regularization...
+Applying regularization...
+<span style="color: green;">Regularized building footprints saved to regularized_buildings.geojson</span>
+Vector files are now available in your working directory.
+            </div>
+        </div>
+        
+        <!-- Step 3.2.18 -->
+        <div class="lab-step" id="step-3-2-18">
+            <h2>3.2.18 Visualizing predictions vs. ground truth on sample test patches</h2>
+            <p>Next, we visualize how well the U-Net model predicted building footprints by comparing the original RGB image, the ground truth mask, and the predicted mask side-by-side for a few sample test patches. The code loops through a few patch locations to extract and visualize the prediction results. Each patch is then displayed across three columns. Finally, the layout is adjusted and the figure is displayed. This visualization helps qualitatively assess how closely the model’s predictions match the annotated building footprints. It is a crucial diagnostic step for understanding the model’s strengths and limitations on individual patches.</p>
+            <pre><code># Visualize predictions vs ground truth on test patches
+# 'dataset', 'image', 'mask', 'full_pred_mask', 'dataset_patch_size' from previous steps
+num_samples = 3 # Number of sample patches to display
+fig, axes = plt.subplots(num_samples, 3, figsize=(12, 4 * num_samples))
+
+for idx in range(num_samples):
+    # Get patch coordinates from the original dataset object (or use random test_dataset indices)
+    # Here, we use first few patch coordinates from the full dataset for simplicity
+    i, j = dataset.patch_coords[idx] 
+    
+    # Extract RGB patch from the original image (first 3 channels)
+    # Transpose to (H, W, C) for matplotlib display
+    rgb_patch = image[:3, i:i+dataset_patch_size, j:j+dataset_patch_size].transpose(1, 2, 0)
+    
+    # Extract true mask patch
+    true_mask_patch = mask[i:i+dataset_patch_size, j:j+dataset_patch_size]
+    
+    # Extract predicted mask patch from the full prediction
+    pred_mask_patch = full_pred_mask[i:i+dataset_patch_size, j:j+dataset_patch_size]
+
+    # Plot RGB Image
+    axes[idx, 0].imshow(rgb_patch.astype(np.uint8)) # Ensure uint8 for image display
+    axes[idx, 0].set_title(f"Sample {idx+1}: RGB Image")
+    axes[idx, 0].axis("off")
+
+    # Plot Ground Truth Mask
+    axes[idx, 1].imshow(true_mask_patch, cmap='gray')
+    axes[idx, 1].set_title(f"Sample {idx+1}: Ground Truth")
+    axes[idx, 1].axis("off")
+
+    # Plot Predicted Mask
+    axes[idx, 2].imshow(pred_mask_patch, cmap='gray')
+    axes[idx, 2].set_title(f"Sample {idx+1}: Predicted Mask")
+    axes[idx, 2].axis("off")
+
+plt.tight_layout() # Adjust layout to prevent title overlaps
+plt.show()         # Display the figure
+</code></pre>
+            <button class="run-button" onclick="showOutput('output-3-2-18')">Run Code</button>
+            <div class="output" id="output-3-2-18">
+Simulated Action:
+<span style="color: green;">Code executed. A plot figure is generated.</span>
+<div class="plot-description">
+    <strong>Plot Description (Sample Patch Visualizations):</strong>
+    <p>A figure will be displayed containing <code class="inline">num_samples</code> (e.g., 3) rows, each with 3 images:</p>
+    <ul>
+        <li><strong>Column 1 (RGB Image):</strong> Shows the original 256x256 RGB aerial image patch.</li>
+        <li><strong>Column 2 (Ground Truth Mask):</strong> Shows the corresponding ground truth mask for that patch. Buildings are typically shown in white, and background in black.</li>
+        <li><strong>Column 3 (Predicted Mask):</strong> Shows the mask predicted by your U-Net model for that patch, using the same color scheme.</li>
+    </ul>
+    <p>This side-by-side comparison allows for a direct visual assessment of the model's performance on specific areas. You can see where the model correctly identifies buildings, misses them, or produces false positives.</p>
+</div>
+            </div>
+        </div>
+
+    </div>
+
+    <script>
+        function showOutput(outputId) {
+            var outputDiv = document.getElementById(outputId);
+            if (outputDiv.style.display === 'none' || outputDiv.style.display === '') {
+                outputDiv.style.display = 'block';
+            } else {
+                // Optional: allow re-clicking to hide
+                // outputDiv.style.display = 'none'; 
+            }
+        }
+    </script>
+</body>
+</html>
